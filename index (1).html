@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TaskPay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700;800&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://sad.adsgram.ai/js/sad.min.js"></script>
+<style>
+:root{--bg:#eef3ec;--ink:#16352b;--card:#fff;--line:#d3ddd0;--gold:#f2a900;--mute:#5f7a6f;--ok:#1f8a5b}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1f19;--ink:#e8f1ea;--card:#173128;--line:#27483b;--mute:#8fb0a2}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:'Bricolage Grotesque',system-ui,sans-serif;padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));max-width:480px;margin-inline:auto}
+header{padding:8px 0 20px}
+.hello{color:var(--mute);font-size:14px;margin:0}
+.bal{font-size:56px;font-weight:800;letter-spacing:-.03em;margin:2px 0;line-height:1}
+.bal small{font-size:18px;font-weight:700;color:var(--gold);margin-left:6px}
+.bar{height:8px;background:var(--line);border-radius:99px;overflow:hidden;margin-top:14px}
+.bar i{display:block;height:100%;background:var(--gold);width:0;transition:width .4s}
+.hint{font-size:13px;color:var(--mute);margin:8px 0 0}
+h2{font-size:16px;margin:24px 0 10px}
+.task{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:10px}
+.task b{display:block;font-size:15px}
+.task span{font-size:13px;color:var(--mute)}
+.task div{flex:1}
+button{font:inherit;font-weight:700;border:0;border-radius:10px;padding:10px 14px;background:var(--ink);color:var(--bg);cursor:pointer;min-width:84px}
+button:disabled{background:var(--line);color:var(--mute);cursor:default}
+button:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+.w{width:100%;padding:14px;background:var(--gold);color:#16352b;margin-top:6px}
+.w:disabled{background:var(--line);color:var(--mute)}
+#msg{position:fixed;left:16px;right:16px;bottom:24px;max-width:448px;margin:auto;background:var(--ink);color:var(--bg);padding:12px 14px;border-radius:12px;font-size:14px;opacity:0;transform:translateY(8px);transition:.25s;pointer-events:none}
+#msg.on{opacity:1;transform:none}
+</style>
+</head>
+<body>
+<header>
+  <p class="hello" id="hello">Welcome</p>
+  <div class="bal"><span id="bal">0</span><small>points</small></div>
+  <div class="bar"><i id="fill"></i></div>
+  <p class="hint" id="hint"></p>
+</header>
+
+<h2>Today's tasks</h2>
+<div id="tasks"></div>
+
+<h2>Withdraw</h2>
+<button class="w" id="wd" disabled>Withdraw USDT</button>
+
+<div id="msg" role="status"></div>
+
+<script>
+/* ======= CONFIG: edit these ======= */
+const ADSGRAM_BLOCK_ID = "YOUR_BLOCK_ID";   // from adsgram.ai publisher dashboard (number only)
+const POINTS_PER_USDT = 1000;                // 1000 points = 1 USDT
+const MIN_WITHDRAW_POINTS = 1000;            // minimum to unlock withdraw
+const CHANNEL_URL = "https://t.me/your_channel";
+const OTHER_URL = "https://example.com";
+const API_BASE = "";                         // your backend URL (see notes) - empty = demo mode
+/* ================================== */
+
+const tg = window.Telegram?.WebApp;
+tg?.ready(); tg?.expand();
+const user = tg?.initDataUnsafe?.user;
+document.getElementById("hello").textContent = "Hi " + (user?.first_name || "there");
+
+const today = () => new Date().toISOString().slice(0,10);
+let S;
+try { S = JSON.parse(localStorage.getItem("tp") || "null"); } catch(e){ S = null; }
+if (!S) S = { points:0, done:{}, adsDay:today(), adsToday:0, checkin:"" };
+if (S.adsDay !== today()) { S.adsDay = today(); S.adsToday = 0; }
+const save = () => { try { localStorage.setItem("tp", JSON.stringify(S)); } catch(e){} };
+
+const MAX_ADS = 10;
+const TASKS = [
+  { id:"checkin", title:"Daily check-in", sub:"+20 points, once a day", btn:"Claim",
+    ready:()=>S.checkin!==today(), run:()=>{ S.checkin=today(); add(20); } },
+  { id:"ad", title:"Watch an ad", sub:"+30 points, up to "+MAX_ADS+" per day", btn:"Watch",
+    ready:()=>S.adsToday<MAX_ADS, run:watchAd, label:()=>S.adsToday+"/"+MAX_ADS },
+  { id:"channel", title:"Join our channel", sub:"+100 points, one time", btn:"Join",
+    ready:()=>!S.done.channel, run:()=>openLink(CHANNEL_URL,"channel",100) },
+  { id:"visit", title:"Visit partner site", sub:"+50 points, one time", btn:"Open",
+    ready:()=>!S.done.visit, run:()=>openLink(OTHER_URL,"visit",50) }
+];
+
+function toast(t){ const m=document.getElementById("msg"); m.textContent=t; m.classList.add("on"); clearTimeout(toast.t); toast.t=setTimeout(()=>m.classList.remove("on"),2200); }
+function add(n){ S.points+=n; save(); render(); toast("+"+n+" points"); }
+
+async function watchAd(){
+  if (!window.Adsgram || ADSGRAM_BLOCK_ID==="YOUR_BLOCK_ID") { toast("Set your Adsgram block ID first"); return; }
+  try {
+    const ctrl = window.Adsgram.init({ blockId: ADSGRAM_BLOCK_ID });
+    const r = await ctrl.show();           // resolves only when the ad was watched fully
+    if (r && r.done) { S.adsToday++; add(30); }
+  } catch(e) { toast("No ad available. Try again soon."); }
+}
+
+function openLink(url,id,pts){
+  tg?.openLink ? tg.openLink(url) : window.open(url,"_blank");
+  setTimeout(()=>{ S.done[id]=true; add(pts); }, 5000);   // demo only: verify on your server in production
+  toast("Stay 5 seconds to get your points");
+}
+
+function render(){
+  document.getElementById("bal").textContent = S.points;
+  const pct = Math.min(100, S.points/MIN_WITHDRAW_POINTS*100);
+  document.getElementById("fill").style.width = pct+"%";
+  const left = Math.max(0, MIN_WITHDRAW_POINTS-S.points);
+  document.getElementById("hint").textContent = left>0 ? left+" points to your first withdrawal" : "You can withdraw now";
+  document.getElementById("wd").disabled = S.points < MIN_WITHDRAW_POINTS;
+  const box = document.getElementById("tasks"); box.innerHTML = "";
+  TASKS.forEach(t=>{
+    const ok = t.ready();
+    const el = document.createElement("div"); el.className="task";
+    el.innerHTML = `<div><b>${t.title}</b><span>${t.sub}${t.label?" · "+t.label():""}</span></div>`;
+    const b = document.createElement("button");
+    b.textContent = ok ? t.btn : "Done"; b.disabled = !ok;
+    b.onclick = t.run; el.appendChild(b); box.appendChild(el);
+  });
+}
+
+document.getElementById("wd").onclick = ()=>{
+  const usdt = (S.points/POINTS_PER_USDT).toFixed(2);
+  if (!API_BASE) { toast("Demo mode: connect your backend to pay out "+usdt+" USDT"); return; }
+  fetch(API_BASE+"/withdraw",{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({initData:tg?.initData})})
+    .then(r=>r.json()).then(d=>toast(d.message||"Request sent")).catch(()=>toast("Network error"));
+};
+
+render();
+</script>
+</body>
+</html>
